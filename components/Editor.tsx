@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { HexColorPicker } from 'react-colorful';
 import type { TitleSettings } from '../lib/template';
 import { applyTemplate, svgToDataUrl } from '../lib/template';
 
@@ -19,6 +20,161 @@ const DEFAULTS: TitleSettings = {
 };
 
 const PRESET_KEY = 'tiktok-title-tool-preset';
+const RECENT_COLORS_KEY = 'tiktok-title-tool-recent-colors';
+const MAX_RECENT_COLORS = 8;
+
+const RECOMMENDED_COLORS = [
+  '#FFFFFF', '#111111', '#F7D154', '#FF5C5C',
+  '#48D597', '#42A5F5', '#F5F1E8', '#6C4CE8'
+];
+
+type ColorFieldProps = {
+  label: string;
+  value: string;
+  recentColors: string[];
+  onPreviewChange: (color: string) => void;
+  onCommit: (color: string) => void;
+};
+
+function normalizeHexColor(value: string): string | null {
+  const color = value.trim().startsWith('#') ? value.trim() : `#${value.trim()}`;
+  return /^#[0-9a-fA-F]{6}$/.test(color) ? color.toUpperCase() : null;
+}
+
+function ColorField({ label, value, recentColors, onPreviewChange, onCommit }: ColorFieldProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [draftColor, setDraftColor] = useState(value);
+  const fieldRef = useRef<HTMLDivElement>(null);
+  const originalColorRef = useRef(value);
+  const pickerColorRef = useRef(value);
+
+  useEffect(() => {
+    setDraftColor(value);
+  }, [value]);
+
+  const openPicker = () => {
+    originalColorRef.current = value;
+    pickerColorRef.current = value;
+    setDraftColor(value);
+    setIsOpen(true);
+  };
+
+  const cancelPicker = () => {
+    onPreviewChange(originalColorRef.current);
+    setDraftColor(originalColorRef.current);
+    pickerColorRef.current = originalColorRef.current;
+    setIsOpen(false);
+  };
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const closeOnOutsidePress = (event: PointerEvent) => {
+      if (!fieldRef.current?.contains(event.target as Node)) cancelPicker();
+    };
+
+    document.addEventListener('pointerdown', closeOnOutsidePress);
+    return () => document.removeEventListener('pointerdown', closeOnOutsidePress);
+  }, [isOpen, value]);
+
+  const previewPickerColor = (color: string) => {
+    pickerColorRef.current = color;
+    onPreviewChange(color);
+    setDraftColor(color);
+  };
+
+  const selectSwatchColor = (color: string) => {
+    previewPickerColor(color);
+  };
+
+  const confirmPicker = () => {
+    const color = normalizeHexColor(draftColor);
+    if (!color) {
+      setDraftColor(pickerColorRef.current);
+      return;
+    }
+
+    onPreviewChange(color);
+    onCommit(color);
+    setIsOpen(false);
+  };
+
+  return (
+    <div className="color-field" ref={fieldRef}>
+      <span className="color-label">{label}</span>
+      <button
+        type="button"
+        className="color-trigger"
+        aria-expanded={isOpen}
+        onClick={() => isOpen ? cancelPicker() : openPicker()}
+      >
+        <span className="color-preview" style={{ backgroundColor: value }} aria-hidden="true" />
+        <span>{value.toUpperCase()}</span>
+      </button>
+      {isOpen && (
+        <div className="color-popover" onKeyDown={(event) => { if (event.key === 'Escape') cancelPicker(); }}>
+          <div className="picker-control">
+            <HexColorPicker color={value} onChange={previewPickerColor} />
+          </div>
+          <label className="hex-input">
+            <span>Hex</span>
+            <input
+              value={draftColor}
+              inputMode="text"
+              maxLength={7}
+              aria-label={`${label} hex színkódja`}
+              onChange={(event) => setDraftColor(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  confirmPicker();
+                }
+              }}
+            />
+          </label>
+          <div className="color-options">
+            <span>Javasolt</span>
+            <div className="color-swatches">
+              {RECOMMENDED_COLORS.map((color) => (
+                <button
+                  type="button"
+                  className="color-swatch"
+                  key={color}
+                  style={{ backgroundColor: color }}
+                  aria-label={`${color} kiválasztása`}
+                  title={color}
+                  onClick={() => selectSwatchColor(color)}
+                />
+              ))}
+            </div>
+          </div>
+          {recentColors.length > 0 && (
+            <div className="color-options">
+              <span>Legutóbbi</span>
+              <div className="color-swatches">
+                {recentColors.map((color) => (
+                  <button
+                    type="button"
+                    className="color-swatch"
+                    key={color}
+                    style={{ backgroundColor: color }}
+                    aria-label={`${color} kiválasztása`}
+                    title={color}
+                    onClick={() => selectSwatchColor(color)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="color-actions">
+            <button type="button" className="button" onClick={cancelPicker}>Mégse</button>
+            <button type="button" className="button primary" onClick={confirmPicker}>Kész</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function Editor() {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -30,6 +186,7 @@ export default function Editor() {
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
   const [message, setMessage] = useState('');
+  const [recentColors, setRecentColors] = useState<string[]>([]);
   const canvasRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -42,6 +199,16 @@ export default function Editor() {
     if (saved) {
       try { setSettings({ ...DEFAULTS, ...JSON.parse(saved) }); } catch { /* ignore */ }
     }
+
+    const savedColors = localStorage.getItem(RECENT_COLORS_KEY);
+    if (savedColors) {
+      try {
+        const colors = JSON.parse(savedColors);
+        if (Array.isArray(colors)) {
+          setRecentColors(colors.filter((color): color is string => typeof color === 'string' && normalizeHexColor(color) !== null));
+        }
+      } catch { /* ignore */ }
+    }
   }, []);
 
   const svg = useMemo(() => {
@@ -52,6 +219,23 @@ export default function Editor() {
 
   const update = <K extends keyof TitleSettings>(key: K, value: TitleSettings[K]) => {
     setSettings((s) => ({ ...s, [key]: value }));
+  };
+
+  const updateColor = (key: 'color' | 'backgroundColor', color: string) => {
+    const normalizedColor = normalizeHexColor(color);
+    if (!normalizedColor) return;
+
+    update(key, normalizedColor);
+    setRecentColors((colors) => {
+      const nextColors = [normalizedColor, ...colors.filter((savedColor) => savedColor !== normalizedColor)].slice(0, MAX_RECENT_COLORS);
+      localStorage.setItem(RECENT_COLORS_KEY, JSON.stringify(nextColors));
+      return nextColors;
+    });
+  };
+
+  const previewColor = (key: 'color' | 'backgroundColor', color: string) => {
+    const normalizedColor = normalizeHexColor(color);
+    if (normalizedColor) update(key, normalizedColor);
   };
 
   const chooseVideo = (file: File) => {
@@ -198,8 +382,8 @@ export default function Editor() {
           <label>Betűméret <b>{settings.fontSize}px</b><input type="range" min="20" max="140" value={settings.fontSize} onChange={(e) => update('fontSize', Number(e.target.value))} /></label>
 
           <div className="grid2">
-            <label>Betűszín<input type="color" value={settings.color} onChange={(e) => update('color', e.target.value)} /></label>
-            <label>Háttér<input type="color" value={settings.backgroundColor} onChange={(e) => update('backgroundColor', e.target.value)} /></label>
+            <ColorField label="Betűszín" value={settings.color} recentColors={recentColors} onPreviewChange={(color) => previewColor('color', color)} onCommit={(color) => updateColor('color', color)} />
+            <ColorField label="Háttér" value={settings.backgroundColor} recentColors={recentColors} onPreviewChange={(color) => previewColor('backgroundColor', color)} onCommit={(color) => updateColor('backgroundColor', color)} />
           </div>
 
           <label>Háttér opacity <b>{Math.round(settings.backgroundOpacity * 100)}%</b><input type="range" min="0" max="1" step="0.01" value={settings.backgroundOpacity} onChange={(e) => update('backgroundOpacity', Number(e.target.value))} /></label>
